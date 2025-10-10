@@ -1,18 +1,15 @@
-"use client";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
-
-//設定で使用したAliasを使っています。../components/headerと同じです。
-import Header from "@/app/component/header";
-import Main from "@/app/component/main";
-import Footer from "@/app/component/footer";
+import Header from "@/app/components/header";
+import Footer from "@/app/components/footer";
+import { postAction } from "@/app/components/postAction";
 
 export default function PostPage() {
-  const router = useRouter();
   return (
     <>
       <Header />
-      <Main />
+      <form action={postAction}>
+        <input type="text" name="name" />
+        <button type="submit">送信</button>
+      </form>
       <Footer />
     </>
   );
