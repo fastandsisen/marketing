@@ -6,12 +6,37 @@ import BackHome from "@/app/components/BackHome";
 import RankingSection from "@/app/components/Result/RankingSection";
 import VideoSection from "@/app/components/Result/VideoSection";
 import { countWords } from "@/app/lib/countWords";
-import JapanVsForeignPie from "@/app/components/Result/JapanVsForeignPie";
 import PromoBridge from "@/app/components/Result/PromoBridge";
+import { toRomaji } from "wanakana"; // かな→ローマ字の軽量変換
 
 type SP = Record<string, string | string[] | undefined>;
 
-type SimpleVideo = { title: string; id: string }; // ← 追加
+type SimpleVideo = { title: string; id: string };
+
+// ---- 可能なら漢字も含めてローマ字化（失敗時は軽量版にフォールバック） ----
+async function getRomaji(input: string): Promise<string> {
+  const hasKanji = /[一-龥]/.test(input);
+  try {
+    if (hasKanji) {
+      const { default: Kuroshiro } = await import("kuroshiro");
+      const { default: KuromojiAnalyzer } = await import(
+        "kuroshiro-analyzer-kuromoji"
+      );
+      const kuro = new Kuroshiro();
+      await kuro.init(new KuromojiAnalyzer());
+      const out = await kuro.convert(input, {
+        to: "romaji",
+        mode: "spaced",
+        romajiSystem: "hepburn",
+      });
+      return out.trim();
+    }
+  } catch {
+    // 解析失敗時は軽量版へフォールバック
+  }
+  // かな入力などは軽量版で十分
+  return toRomaji(input).trim();
+}
 
 export default async function ResultPage({
   searchParams,
@@ -46,50 +71,68 @@ export default async function ResultPage({
     );
   }
 
-  // ===== YouTube APIで最大100件（50件×2ページ想定だが、ここでは1ページ）取得 =====
+  // ====== クエリ拡張（日本語とローマ字の両方で検索） ======
+  const queries: string[] = [name];
+  const romaji = await getRomaji(name);
+  if (romaji && romaji.toLowerCase() !== name.toLowerCase()) {
+    queries.push(romaji);
+    const romajiCompact = romaji.replace(/\s+/g, "");
+    if (romajiCompact && romajiCompact !== romaji) queries.push(romajiCompact);
+  }
+
+  // ===== YouTube APIで取得（50件× ここでは1ページ × クエリ数） =====
   const titles: string[] = [];
-  const videos: SimpleVideo[] = []; // ← 追加：リンク用に保持
-  let nextPageToken: string | undefined;
+  const videos: SimpleVideo[] = [];
+  const seen = new Set<string>(); // videoId 重複排除
 
-  for (let page = 0; page < 2; page++) {
-    const qs = new URLSearchParams({
-      key: API_KEY,
-      part: "snippet",
-      q: name, // 部分一致検索
-      type: "video",
-      maxResults: "50",
-      order: "viewCount", // 再生数の多い順に取得
-    });
-    if (nextPageToken) qs.set("pageToken", nextPageToken);
+  for (const q of queries) {
+    let nextPageToken: string | undefined;
+    for (let page = 0; page < 1; page++) {
+      const qs = new URLSearchParams({
+        key: API_KEY,
+        part: "snippet",
+        q, // ← name 固定ではなく、拡張クエリを使用
+        type: "video",
+        maxResults: "50",
+        order: "viewCount",
+        relevanceLanguage: "ja", // 日本語寄せ（任意）
+      });
+      if (nextPageToken) qs.set("pageToken", nextPageToken);
 
-    const res = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?${qs.toString()}`,
-      { cache: "no-store" }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      return ui(
-        <>
-          <h2>YouTube API エラー</h2>
-          <pre>クオータがなくなりました</pre>
-          <BackHome />
-        </>
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?${qs.toString()}`,
+        { cache: "no-store" }
       );
-    }
 
-    const json = await res.json();
-    for (const item of json.items ?? []) {
-      const lbc = item?.snippet?.liveBroadcastContent;
-      if (lbc && lbc !== "none") continue;
-      const t = item?.snippet?.title as string | undefined;
-      const id = item?.id?.videoId as string | undefined;
-      if (t) titles.push(t);
-      if (t && id) videos.push({ title: t, id }); // ← 追加保存（リンク用）
-    }
+      if (!res.ok) {
+        const text = await res.text();
+        return ui(
+          <>
+            <Header />
+            <h2>YouTube API エラー</h2>
+            <pre>{text || "クオータがなくなりました"}</pre>
+            <BackHome />
+            <Footer />
+          </>
+        );
+      }
 
-    nextPageToken = json.nextPageToken;
-    if (!nextPageToken) break;
+      const json = await res.json();
+      for (const item of json.items ?? []) {
+        const lbc = item?.snippet?.liveBroadcastContent;
+        if (lbc && lbc !== "none") continue;
+        const t = item?.snippet?.title as string | undefined;
+        const id = item?.id?.videoId as string | undefined;
+        if (!t || !id) continue;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        titles.push(t);
+        videos.push({ title: t, id });
+      }
+
+      nextPageToken = json.nextPageToken;
+      if (!nextPageToken) break;
+    }
   }
 
   // ===== タイトルから単語頻度集計 =====
@@ -99,10 +142,9 @@ export default async function ResultPage({
     .slice(0, 50)
     .map(([token, count], i) => ({ rank: i + 1, token, count }));
 
-  // ... 50語の ranked を作成済みとする
   const top50 = ranked.map((r) => r.token).slice(0, 50);
 
-  // Geminiで絞り込み（外部関数）
+  // Geminiで絞り込み
   const refined = await filterWithGemini(name, top50);
 
   // ===== 表示 =====
@@ -123,7 +165,12 @@ export default async function ResultPage({
         videos={videos}
         ytApiKey={process.env.NEXT_PUBLIC_YT_API_KEY as string}
       />
-      <BackHome label="トップに戻る" align="center" fullWidth="mobile" />
+      <BackHome
+        label="トップに戻る"
+        floating
+        offsetRight={20}
+        offsetBottom={24}
+      />
     </>
   );
 }

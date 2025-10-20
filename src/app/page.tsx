@@ -13,7 +13,7 @@ export default function PostPage() {
           alignItems: "center",
           justifyContent: "center",
           padding: "2rem 1rem",
-          background: "#fafbff", // ほんのり背景色
+          background: "#ffffff", // ほんのり背景色
         }}
       >
         <section style={{ width: "100%", maxWidth: 640, textAlign: "center" }}>
@@ -26,7 +26,7 @@ export default function PostPage() {
               color: "#1b2a4a",
             }}
           >
-            Keyword Search
+            AI Keyword Search
           </div>
 
           {/* Server Action を使うので method/encType は指定しない */}
