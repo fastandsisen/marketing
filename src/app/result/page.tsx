@@ -1,12 +1,17 @@
 export const dynamic = "force-dynamic"; // キャッシュせず常に最新結果を取得
-import Link from "next/link";
-import { STOP_WORDS } from "@/app/components/stopWords";
 import Header from "@/app/components/header";
 import Footer from "@/app/components/footer";
-import { headers } from "next/headers";
-import { filterWithGemini } from "@/app/components/gem";
+import { filterWithGemini } from "@/app/lib/gem";
+import BackHome from "@/app/components/BackHome";
+import RankingSection from "@/app/components/Result/RankingSection";
+import VideoSection from "@/app/components/Result/VideoSection";
+import { countWords } from "@/app/lib/countWords";
+import JapanVsForeignPie from "@/app/components/Result/JapanVsForeignPie";
+import PromoBridge from "@/app/components/Result/PromoBridge";
 
 type SP = Record<string, string | string[] | undefined>;
+
+type SimpleVideo = { title: string; id: string }; // ← 追加
 
 export default async function ResultPage({
   searchParams,
@@ -41,15 +46,16 @@ export default async function ResultPage({
     );
   }
 
-  // ===== YouTube APIで100件（50件×2ページ）取得 =====
+  // ===== YouTube APIで最大100件（50件×2ページ想定だが、ここでは1ページ）取得 =====
   const titles: string[] = [];
+  const videos: SimpleVideo[] = []; // ← 追加：リンク用に保持
   let nextPageToken: string | undefined;
 
-  for (let page = 0; page < 1; page++) {
+  for (let page = 0; page < 2; page++) {
     const qs = new URLSearchParams({
       key: API_KEY,
       part: "snippet",
-      q: `%23${name}`, // ハッシュタグ検索（#をURLエンコードで表現）
+      q: name, // 部分一致検索
       type: "video",
       maxResults: "50",
       order: "viewCount", // 再生数の多い順に取得
@@ -66,7 +72,7 @@ export default async function ResultPage({
       return ui(
         <>
           <h2>YouTube API エラー</h2>
-          <pre>{text}</pre>
+          <pre>クオータがなくなりました</pre>
           <BackHome />
         </>
       );
@@ -74,8 +80,12 @@ export default async function ResultPage({
 
     const json = await res.json();
     for (const item of json.items ?? []) {
-      const t = item?.snippet?.title;
-      if (typeof t === "string") titles.push(t);
+      const lbc = item?.snippet?.liveBroadcastContent;
+      if (lbc && lbc !== "none") continue;
+      const t = item?.snippet?.title as string | undefined;
+      const id = item?.id?.videoId as string | undefined;
+      if (t) titles.push(t);
+      if (t && id) videos.push({ title: t, id }); // ← 追加保存（リンク用）
     }
 
     nextPageToken = json.nextPageToken;
@@ -83,35 +93,37 @@ export default async function ResultPage({
   }
 
   // ===== タイトルから単語頻度集計 =====
-  const freq = countWords(titles);
+  const freq = countWords(name, titles);
   const ranked = Object.entries(freq)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 30)
+    .slice(0, 50)
     .map(([token, count], i) => ({ rank: i + 1, token, count }));
 
-  // ... 20語の ranked を作成済みとする
-  const top20 = ranked.map((r) => r.token).slice(0, 20);
+  // ... 50語の ranked を作成済みとする
+  const top50 = ranked.map((r) => r.token).slice(0, 50);
 
-  // Geminiで 10語へ絞る
-  const refined = await filterWithGemini(top20);
+  // Geminiで絞り込み（外部関数）
+  const refined = await filterWithGemini(name, top50);
 
   // ===== 表示 =====
   return ui(
     <>
-      <h3>Geminiが選んだ適切な10語</h3>
-      <ul>
-        {refined.length > 0 ? (
-          refined.map((w: string, i: number) => (
-            <li key={i}>
-              {i + 1}位：{w}
-            </li>
-          ))
-        ) : (
-          <li>抽出できませんでした</li>
-        )}
-      </ul>
+      {refined.length > 0 ? (
+        <RankingSection name={name} refined={refined} />
+      ) : (
+        <p style={{ color: "gray" }}>抽出できませんでした</p>
+      )}
 
-      <BackHome />
+      {videos.length > 0 && <VideoSection videos={videos} />}
+
+      <div style={{ marginTop: "2rem" }}></div>
+      <PromoBridge
+        name={name}
+        keywords={refined}
+        videos={videos}
+        ytApiKey={process.env.NEXT_PUBLIC_YT_API_KEY as string}
+      />
+      <BackHome label="トップに戻る" align="center" fullWidth="mobile" />
     </>
   );
 }
@@ -122,42 +134,6 @@ function ui(children: React.ReactNode) {
   return <div style={{ padding: "1rem", lineHeight: 1.8 }}>{children}</div>;
 }
 
-function BackHome() {
-  return (
-    <p style={{ marginTop: "1rem" }}>
-      <Link href="/">フォームに戻る</Link>
-    </p>
-  );
-}
-
 function getOne(v?: string | string[]) {
   return Array.isArray(v) ? v[0] : v;
-}
-
-/** 日本語/英語トークナイズ＋ストップワード除去 */
-function countWords(titles: string[]) {
-  const freq: Record<string, number> = {};
-
-  for (const title of titles) {
-    const norm = title
-      .replace(/\s+/g, " ")
-      .replace(/https?:\/\/\S+/g, "")
-      .replace(/[【】\[\]（）()「」『』、。,.!?:;~…]/g, " ")
-      .trim();
-
-    const tokens = [
-      ...norm.matchAll(
-        /#[\p{L}\p{N}_]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2,}|[\p{Alphabetic}\p{Number}]{2,}/gu
-      ),
-    ].map((m) => m[0].toLowerCase());
-
-    for (let tok of tokens) {
-      if (tok.startsWith("#")) tok = tok.slice(1);
-      if (tok.length < 2 || /^\d+$/.test(tok)) continue;
-      if (STOP_WORDS.has(tok)) continue;
-      freq[tok] = (freq[tok] ?? 0) + 1;
-    }
-  }
-
-  return freq;
 }
