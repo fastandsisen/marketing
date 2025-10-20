@@ -8,6 +8,12 @@ type BackHomeProps = {
   showIcon?: boolean;
   /** true = 常にフル幅 / "mobile" = モバイル時のみフル幅 */
   fullWidth?: boolean | "mobile";
+
+  /** 追加: フローティング表示（スクロール中も常時右下に固定） */
+  floating?: boolean;
+  /** 追加: フローティング時のオフセット（px） */
+  offsetRight?: number;
+  offsetBottom?: number;
 };
 
 const justify = {
@@ -22,6 +28,9 @@ export default function BackHome({
   align = "left",
   showIcon = true,
   fullWidth,
+  floating = false,
+  offsetRight = 16,
+  offsetBottom = 16,
 }: BackHomeProps) {
   const wrapStyle = fullWidth
     ? { justifyContent: "stretch" as const }
@@ -32,13 +41,27 @@ export default function BackHome({
     styles.button,
     fullWidth === true ? styles.full : "",
     fullWidth === "mobile" ? styles.fullMobile : "",
+    floating ? styles.floating : "",
   ]
     .filter(Boolean)
     .join(" ");
 
+  // フローティング時のみ位置を指定
+  const floatStyle = floating
+    ? {
+        right: `calc(env(safe-area-inset-right, 0px) + ${offsetRight}px)`,
+        bottom: `calc(env(safe-area-inset-bottom, 0px) + ${offsetBottom}px)`,
+      }
+    : undefined;
+
   return (
-    <div className={styles.wrap} style={wrapStyle}>
-      <Link href={href} className={buttonClass} aria-label={label}>
+    <div className={styles.wrap} style={floating ? undefined : wrapStyle}>
+      <Link
+        href={href}
+        className={buttonClass}
+        style={floatStyle}
+        aria-label={label}
+      >
         {showIcon && (
           <svg
             aria-hidden="true"

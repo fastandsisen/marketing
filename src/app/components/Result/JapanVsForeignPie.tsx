@@ -41,8 +41,69 @@ export type JapanVsForeignPieProps = {
   collapseUnknownIntoOther?: boolean;
   onSharesReady?: (
     rows: Array<{ code: string; name: string; views: number; pct: number }>
-  ) => void; // ★追加
+  ) => void;
 };
+
+/** ISO2国コードのホワイトリスト（必要に応じて追加） */
+const ISO2 = new Set([
+  "JP",
+  "US",
+  "CN",
+  "KR",
+  "TW",
+  "HK",
+  "GB",
+  "DE",
+  "FR",
+  "IT",
+  "ES",
+  "IN",
+  "ID",
+  "TH",
+  "VN",
+  "PH",
+  "MY",
+  "SG",
+  "AU",
+  "CA",
+  "BR",
+  "MX",
+  "SA",
+  "RU",
+  "IL",
+  "TR",
+  "GR",
+  "PT",
+  "PL",
+  "NL",
+  "SE",
+  "NO",
+  "DK",
+  "FI",
+  "IE",
+  "CH",
+  "CZ",
+  "HU",
+  "SK",
+  "RO",
+  "AT",
+  "BE",
+  "AR",
+  "CL",
+  "PE",
+  "NZ",
+  "AE",
+  "QA",
+]);
+
+/** 国コードを正規化：大文字化＋例外補正。ISO外は undefined を返す */
+function normalizeCountry(code?: string | null): string | undefined {
+  if (!code || typeof code !== "string") return undefined;
+  let cc = code.trim().toUpperCase();
+  if (cc === "UK") cc = "GB"; // 例外補正
+  if (cc.length !== 2) return undefined;
+  return ISO2.has(cc) ? cc : undefined;
+}
 
 async function fetchVideosByIds(
   ids: string[],
@@ -87,10 +148,10 @@ async function fetchChannelsByIds(
   return results;
 }
 
-/** チャンネルの国コード（brandingSettings 優先） */
+/** チャンネルの国コード（brandingSettings 優先）→ 正規化して返す */
 function pickCountry(ch?: YTChannel): string | undefined {
-  const fromBranding = ch?.brandingSettings?.channel?.country;
-  const fromSnippet = ch?.snippet?.country;
+  const fromBranding = normalizeCountry(ch?.brandingSettings?.channel?.country);
+  const fromSnippet = normalizeCountry(ch?.snippet?.country);
   return fromBranding ?? fromSnippet ?? undefined;
 }
 
@@ -101,13 +162,13 @@ const REG = {
   ru: /[\u0400-\u04FF]/, // キリル
   ar: /[\u0600-\u06FF]/, // アラビア
   th: /[\u0E00-\u0E7F]/, // タイ
-  hi: /[\u0900-\u097F]/, // デーヴァナーガリー（ヒンディー等）
+  hi: /[\u0900-\u097F]/, // デーヴァナーガリー
   he: /[\u0590-\u05FF]/, // ヘブライ
   el: /[\u0370-\u03FF]/, // ギリシャ
-  vi: /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệịọỏốồổỗộớờởỡợụủứừửữựỳỷỹỵ]/i, // ベトナム語の拡張ラテン
+  vi: /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệịọỏốồổỗộớờởỡợụủứừửữựỳỷỹỵ]/i, // ベトナム拡張ラテン
 };
 
-/** 動画の言語/テキストから国を推定（不足時の補完） */
+/** 動画の言語/テキストから国を推定（不足時の補完）→ ISOを保証 */
 function guessCountry(
   video: YTVideo,
   opts: { englishToUSFallback: boolean }
@@ -121,33 +182,34 @@ function guessCountry(
     video.snippet.description ?? ""
   }`;
 
-  // 言語コード優先
+  let cc: string | undefined;
+
+  // 言語コードからの推定（必要最低限）
   if (lang.startsWith("zh")) {
     if (lang.includes("hans") || lang.endsWith("-cn") || lang === "zh-cn")
-      return "CN";
-    if (lang.includes("hant") || lang.endsWith("-tw") || lang === "zh-tw")
-      return "TW";
-    if (lang.endsWith("-hk")) return "HK";
-    return "CN";
-  }
-  if (lang.startsWith("ja")) return "JP";
-  if (lang.startsWith("ko")) return "KR";
-  if (lang.startsWith("th")) return "TH";
-  if (lang.startsWith("vi")) return "VN";
-  if (lang.startsWith("hi")) return "IN";
-  if (lang.startsWith("id")) return "ID";
-  if (lang.startsWith("ms")) return "MY";
-  if (lang.startsWith("pt")) return "BR"; // 多くがBR発だがPTの可能性も
-  if (lang.startsWith("es")) return "ES"; // MX等に寄せたいなら調整
-  if (lang.startsWith("fr")) return "FR";
-  if (lang.startsWith("de")) return "DE";
-  if (lang.startsWith("ru")) return "RU";
-  if (lang.startsWith("ar")) return "SA";
-  if (lang.startsWith("he")) return "IL";
-  if (lang.startsWith("tr")) return "TR";
+      cc = "CN";
+    else if (lang.includes("hant") || lang.endsWith("-tw") || lang === "zh-tw")
+      cc = "TW";
+    else if (lang.endsWith("-hk")) cc = "HK";
+    else cc = "CN";
+  } else if (lang.startsWith("ja")) cc = "JP";
+  else if (lang.startsWith("ko")) cc = "KR";
+  else if (lang.startsWith("th")) cc = "TH";
+  else if (lang.startsWith("vi")) cc = "VN";
+  else if (lang.startsWith("hi")) cc = "IN";
+  else if (lang.startsWith("id")) cc = "ID";
+  else if (lang.startsWith("ms")) cc = "MY";
+  else if (lang.startsWith("pt")) cc = "BR"; // 必要ならPTへ振り分け調整
+  else if (lang.startsWith("es")) cc = "ES"; // MXへ寄せたいなら調整
+  else if (lang.startsWith("fr")) cc = "FR";
+  else if (lang.startsWith("de")) cc = "DE";
+  else if (lang.startsWith("ru")) cc = "RU";
+  else if (lang.startsWith("ar")) cc = "SA";
+  else if (lang.startsWith("he")) cc = "IL";
+  else if (lang.startsWith("tr")) cc = "TR";
+  else if (lang.startsWith("en") && opts.englishToUSFallback) cc = "US";
 
-  // 英語は地域が広すぎるので、方針で分岐
-  if (lang.startsWith("en") && opts.englishToUSFallback) return "US";
+  if (cc && ISO2.has(cc)) return cc;
 
   // テキストのスクリプトからの補完（最後の手段）
   if (REG.ja.test(text)) return "JP";
@@ -295,10 +357,15 @@ export default function JapanVsForeignPie({
     const totals = new Map<string, number>(); // country -> views
     for (const v of list) {
       const ch = channelMap[v.snippet.channelId];
-      const code =
+
+      // 正規の国コードのみを採用（最終ガード付き）
+      const codeRaw =
         pickCountry(ch) ??
         guessCountry(v, { englishToUSFallback }) ??
         "Unknown";
+
+      const code = normalizeCountry(codeRaw) ?? "Unknown";
+
       const views = Number(v.statistics?.viewCount ?? "0");
       totals.set(code, (totals.get(code) ?? 0) + (isFinite(views) ? views : 0));
     }
